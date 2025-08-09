@@ -1,0 +1,167 @@
+getgenv().autoShoot = true
+getgenv().autoShootDelay = 2.5
+getgenv().autoShootHitchance = 90
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local shootRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ShootGun")
+
+local BulletRenderer = require(ReplicatedStorage.Modules.BulletRenderer)
+local CharacterRayOrigin = require(ReplicatedStorage.Modules.CharacterRayOrigin)
+
+local character, humanoid
+local lastAutoShoot = 0
+
+local function updateReferences()
+    character = localPlayer.Character
+    humanoid = character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function isEnemy(player)
+    if player == localPlayer then return false end
+    if player.Team == localPlayer.Team then return false end
+    if not player.Character or not player.Character:FindFirstChildOfClass("Humanoid") then return false end
+    local hum = player.Character:FindFirstChildOfClass("Humanoid")
+    if hum.Health <= 0 then return false end
+    local char = player.Character
+    if not char:FindFirstChild("HumanoidRootPart") then return false end
+    return true
+end
+
+local function getEquippedGun()
+    if not character then return nil end
+    for _, tool in pairs(character:GetChildren()) do
+        if tool:IsA("Tool") and tool:FindFirstChild("Muzzle", true) then
+            return tool
+        end
+    end
+    return nil
+end
+
+local function canSeeEnemy(targetPlr)
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return false end
+    local myRoot = character.HumanoidRootPart
+    local enemyRoot = targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart")
+    if not enemyRoot then return false end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {character}
+
+    local dir = enemyRoot.Position - myRoot.Position
+    local result = workspace:Raycast(myRoot.Position, dir.Unit * dir.Magnitude, rayParams)
+
+    if result and result.Instance ~= enemyRoot and not result.Instance:IsDescendantOf(targetPlr.Character) then
+        return false
+    end
+    return true
+end
+
+local function getClosestEnemy()
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    local closestPlayer, closestDist = nil, math.huge
+    local myPos = character.HumanoidRootPart.Position
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if isEnemy(plr) and canSeeEnemy(plr) then
+            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = (hrp.Position - myPos).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestPlayer = plr
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+local function performShot(targetPos, targetPart)
+    local gun = getEquippedGun()
+    if not gun or not gun.Enabled then return false end
+    local muzzle = gun:FindFirstChild("Muzzle", true)
+    if not muzzle then return false end
+
+    local cooldown = gun:GetAttribute("Cooldown") or 0
+    if tick() - (getgenv()._lastShoot or 0) < cooldown then return false end
+    
+    getgenv()._lastShoot = tick()
+
+    local fireSound = gun:FindFirstChild("Fire")
+    if fireSound then fireSound:Play() end
+
+    if math.random(0, 100) <= (getgenv().autoShootHitchance or 90) then
+        pcall(function()
+            BulletRenderer(muzzle.WorldPosition, targetPos, gun:GetAttribute("BulletType"))
+        end)
+        shootRemote:FireServer(CharacterRayOrigin(character), targetPos, targetPart, targetPos)
+    else
+        local missPos = targetPos + Vector3.new(
+            math.random(-15, 15),
+            math.random(-15, 15),
+            math.random(-15, 15)
+        )
+        pcall(function()
+            BulletRenderer(muzzle.WorldPosition, missPos, gun:GetAttribute("BulletType"))
+        end)
+        shootRemote:FireServer(CharacterRayOrigin(character), missPos, nil, missPos)
+    end
+    
+    gun:Activate()
+    return true
+end
+
+-- Create mobile shoot button
+local function createShootButton()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "ShootButton"
+    screenGui.ResetOnSpawn = false
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+    local button = Instance.new("TextButton")
+    button.Name = "ShootBtn"
+    button.Size = UDim2.new(0, 80, 0, 80)
+    button.Position = UDim2.new(1, -100, 0.5, -40)
+    button.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    button.BorderSizePixel = 0
+    button.Text = "SHOOT"
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextScaled = true
+    button.Font = Enum.Font.GothamBold
+    button.Parent = screenGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 15)
+    corner.Parent = button
+
+    button.MouseButton1Click:Connect(function()
+        if not getgenv().autoShoot then return end
+        if tick() - lastAutoShoot < (getgenv().autoShootDelay or 2.5) then return end
+
+        local targetPlayer = getClosestEnemy()
+        if targetPlayer then
+            local hrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local success = performShot(hrp.Position, hrp)
+                if success then
+                    lastAutoShoot = tick()
+                end
+            end
+        end
+    end)
+end
+
+updateReferences()
+createShootButton()
+
+localPlayer.CharacterAdded:Connect(function()
+    task.wait(0.1)
+    updateReferences()
+end)
